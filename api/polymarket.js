@@ -1,4 +1,3 @@
-
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -10,7 +9,11 @@ export default async function handler(req, res) {
     try {
       const r = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": "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",
+          "anthropic-version": "2023-06-01",
+        },
         body: JSON.stringify(req.body),
       });
       const data = await r.json();
