@@ -14,10 +14,10 @@
     .badge { display: inline-flex; align-items: center; gap: .4rem; border-radius: 20px; padding: 4px 12px; font-size: .8rem; font-weight: 500; }
     .badge button { background: none; border: none; cursor: pointer; font-size: .7rem; opacity: .6; }
     .row { display: flex; gap: .5rem; margin-bottom: 1.5rem; }
-    input { flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: .9rem; }
+    input { flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: .9rem; background: #fff; }
     button.primary { background: #1a1a1a; color: #fff; border: none; border-radius: 8px; padding: 10px 20px; font-size: .9rem; cursor: pointer; }
-    button.primary:disabled { background: #ccc; cursor: default; }
-    button.secondary { background: none; border: 1px solid #ddd; border-radius: 8px; padding: 8px 16px; font-size: .85rem; cursor: pointer; }
+    button.primary:disabled { background: #999; cursor: default; }
+    button.secondary { background: none; border: 1px solid #ddd; border-radius: 8px; padding: 8px 16px; font-size: .85rem; cursor: pointer; background: #fff; }
     #generate { width: 100%; margin-top: .5rem; }
     .card { background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; }
     .card-header { display: flex; align-items: center; gap: .6rem; margin-bottom: .75rem; }
@@ -32,9 +32,182 @@
     .bar-fill { height: 100%; border-radius: 4px; }
     .prob { font-size: .75rem; font-weight: 500; min-width: 30px; text-align: right; }
     .meta { font-size: .7rem; color: #aaa; margin-top: 3px; }
-    .divider { border-top: 1px solid #eee; padding-top: .75rem; margin-bottom: .5rem; }
-    .show-more { font-size: .75rem; color: #888; background: none; border: none; cursor: pointer; padding: 4px 0; }
-    #brief { display: none; }
+    .divider { border-top: 1px solid #eee; padding-top: .75rem; }
+    .show-more { font-size: .75rem; color: #888; background: none; border: none; cursor: pointer; padding: 4px 0; margin-top: 4px; }
+    .error-box { background: #fff0f0; border: 1px solid #fcc; border-radius: 8px; padding: 10px 14px; font-size: .8rem; color: #c00; margin-bottom: .75rem; }
+    .italic { font-style: italic; color: #888; font-size: .85rem; }
+    #status { font-size: .85rem; color: #666; margin-bottom: 1rem; min-height: 1.2rem; }
+    .setup { max-width: 560px; }
+  </style>
+</head>
+<body>
+
+<div id="setup" class="setup">
+  <p class="label">Morning Brief</p>
+  <h1>Good morning</h1>
+  <p class="subtitle">Real-money prediction market signals, turned into executive intelligence.</p>
+  <p class="label" style="margin-bottom:.5rem">Your topics</p>
+  <div class="topics" id="topics"></div>
+  <div class="row">
+    <input id="newTopic" placeholder="Add a topic (e.g. Fed interest rates)" />
+    <button class="secondary" onclick="addTopic()">Add</button>
+  </div>
+  <button class="primary" id="generate" onclick="generate()">Generate today's brief</button>
+</div>
+
+<div id="brief" style="display:none">
+  <p class="label">Morning Brief · Polymarket</p>
+  <h1 id="brief-date"></h1>
+  <p id="status"></p>
+  <div class="topics" id="brief-badges" style="margin-bottom:1rem"></div>
+  <button class="secondary" style="margin-bottom:1.5rem" onclick="showSetup()">Edit topics</button>
+  <div id="brief-cards"></div>
+</div>
+
+<script>
+const PROXY = "https://morning-brief-proxy.vercel.app/api/polymarket";
+const COLORS = ["#185FA5","#0F6E56","#993C1D","#3B6D11","#534AB7","#993556","#885EA0","#B45A10"];
+let topics = ["War in Iran","Global trade tariffs","AI technology","Financial markets","US politics"];
+
+function renderTopics() {
+  document.getElementById("topics").innerHTML = topics.map((t,i) =>
+    `<span class="badge" style="background:${COLORS[i%8]}18;border:1px solid ${COLORS[i%8]}55;color:${COLORS[i%8]}">
+      ${t}<button onclick="removeTopic(${i})">✕</button>
+    </span>`).join("");
+}
+function removeTopic(i) { topics.splice(i,1); renderTopics(); }
+function addTopic() {
+  const inp = document.getElementById("newTopic");
+  const t = inp.value.trim();
+  if (t && !topics.includes(t)) { topics.push(t); renderTopics(); }
+  inp.value = "";
+}
+document.getElementById("newTopic").addEventListener("keydown", e => { if(e.key==="Enter") addTopic(); });
+function showSetup() {
+  document.getElementById("brief").style.display = "none";
+  document.getElementById("setup").style.display = "";
+}
+function setStatus(msg) { document.getElementById("status").textContent = msg; }
+
+async function searchPolymarket(query) {
+  const url = `${PROXY}?q=${encodeURIComponent(query)}&limit_per_type=8`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Polymarket HTTP ${res.status}`);
+  const data = await res.json();
+  return data.events || [];
+}
+
+async function summarise(topic, events) {
+  const markets = events.flatMap(e => e.markets || []);
+  if (!markets.length) return null;
+  const lines = markets.slice(0,10).map(m => {
+    try {
+      const prices = JSON.parse(m.outcomePrices||"[]");
+      const prob = prices[0] ? Math.round(parseFloat(prices[0])*100) : null;
+      const vol = Number(m.volume||0);
+      const v = vol>=1e6?`$${(vol/1e6).toFixed(1)}M`:vol>=1e3?`$${(vol/1e3).toFixed(0)}K`:`$${vol.toFixed(0)}`;
+      return prob!=null?`• "${m.question}" → ${prob}% Yes (vol ${v})`:`• ${m.question}`;
+    } catch { return `• ${m.question}`; }
+  }).join("\n");
+
+  const res = await fetch(PROXY, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 500,
+      system: "You are a concise analyst briefing a C-level executive. Write 3 tight sentences. No bullets, no headers.",
+      messages: [{ role: "user", content: `Summarise these Polymarket prediction markets on "${topic}" for an executive. What do the probabilities signal strategically?\n\n${lines}` }]
+    })
+  });
+  if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`);
+  const d = await res.json();
+  return d.content?.[0]?.text || null;
+}
+
+function probColor(p) { return p>=70?"#0F6E56":p>=40?"#B45A10":"#993C1D"; }
+
+function renderMarket(m) {
+  let prob = null;
+  try { const p=JSON.parse(m.outcomePrices||"[]"); prob=p[0]?Math.round(parseFloat(p[0])*100):null; } catch{}
+  const vol = Number(m.volume||0);
+  const v = vol>=1e6?`$${(vol/1e6).toFixed(1)}M`:vol>=1e3?`$${(vol/1e3).toFixed(0)}K`:`$${vol.toFixed(0)}`;
+  const c = prob!=null?probColor(prob):"#aaa";
+  return `<div class="market">
+    <p>${m.question}</p>
+    ${prob!=null?`<div class="bar-row"><div class="bar-bg"><div class="bar-fill" style="width:${prob}%;background:${c}"></div></div><span class="prob" style="color:${c}">${prob}%</span></div>`:""}
+    <p class="meta">Vol ${v}${m.endDate?` · closes ${new Date(m.endDate).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}`:""}</p>
+  </div>`;
+}
+
+function renderCard(topic, events, summary, color, error) {
+  const markets = events.flatMap(e=>e.markets||[]);
+  const id = "m"+Math.random().toString(36).slice(2);
+  return `<div class="card">
+    <div class="card-header">
+      <div class="dot" style="background:${color}"></div>
+      <span class="card-title">${topic}</span>
+      <span class="count">${markets.length} market${markets.length!==1?"s":""}</span>
+    </div>
+    ${error?`<div class="error-box">${error}</div>`:""}
+    ${summary?`<div class="summary">${summary}</div>`:""}
+    ${!markets.length&&!error?`<p class="italic">No active markets found.</p>`:""}
+    ${markets.length?`<div class="divider">
+      ${markets.slice(0,4).map(renderMarket).join("")}
+      ${markets.length>4?`<div id="${id}" style="display:none">${markets.slice(4).map(renderMarket).join("")}</div>
+        <button class="show-more" onclick="toggle('${id}',this,${markets.length-4})">+${markets.length-4} more</button>`:""}
+    </div>`:""}
+  </div>`;
+}
+
+function toggle(id, btn, n) {
+  const el = document.getElementById(id);
+  const hidden = el.style.display==="none";
+  el.style.display = hidden?"":"none";
+  btn.textContent = hidden?"Show less":`+${n} more`;
+}
+
+async function generate() {
+  const btn = document.getElementById("generate");
+  btn.disabled = true;
+  document.getElementById("setup").style.display = "none";
+  document.getElementById("brief").style.display = "";
+  document.getElementById("brief-cards").innerHTML = "";
+  document.getElementById("brief-badges").innerHTML = "";
+  document.getElementById("brief-date").textContent =
+    new Date().toLocaleDateString("en-GB",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+
+  const results = [];
+  for (let i=0; i<topics.length; i++) {
+    const topic = topics[i], color = COLORS[i%8];
+    setStatus(`Fetching "${topic}" (${i+1}/${topics.length})…`);
+    let events=[], error=null;
+    try { events = await searchPolymarket(topic); }
+    catch(e) { error = `Could not fetch markets: ${e.message}`; }
+
+    let summary = null;
+    if (events.length) {
+      setStatus(`Summarising "${topic}"…`);
+      try { summary = await summarise(topic, events); }
+      catch(e) { error = (error||"")+" Summary failed: "+e.message; }
+    }
+    results.push({topic,events,summary,color,error});
+    // render cards as we go
+    document.getElementById("brief-cards").innerHTML = results.map(r=>renderCard(r.topic,r.events,r.summary,r.color,r.error)).join("");
+  }
+
+  const total = results.reduce((s,r)=>s+r.events.flatMap(e=>e.markets||[]).length,0);
+  setStatus(`${topics.length} topics · ${total} live prediction markets`);
+  document.getElementById("brief-badges").innerHTML = results.map(r=>
+    `<span class="badge" style="background:${r.color}18;border:1px solid ${r.color}55;color:${r.color}">${r.topic}</span>`
+  ).join("");
+  btn.disabled = false;
+}
+
+renderTopics();
+</script>
+</body>
+</html>    #brief { display: none; }
     .setup { max-width: 560px; }
     .italic { font-style: italic; color: #888; font-size: .85rem; }
   </style>
