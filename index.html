@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <title>Morning Brief</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -93,63 +94,35 @@ async function searchPolymarket(query) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
-  // Only return events that are not closed
   return (data.events || []).filter(e => !e.closed);
 }
 
-function summarise(topic, events) {
+async function summarise(topic, events) {
   const markets = events.flatMap(e => e.markets || []).filter(m => !m.closed);
   if (!markets.length) return null;
-
-  const withProbs = markets.map(m => {
+  const lines = markets.slice(0,10).map(m => {
     try {
       const prices = JSON.parse(m.outcomePrices||"[]");
       const prob = prices[0] ? Math.round(parseFloat(prices[0])*100) : null;
-      return { q: m.question, prob, vol: Number(m.volume||0), end: m.endDate };
+      const vol = Number(m.volume||0);
+      const v = vol>=1e6?`$${(vol/1e6).toFixed(1)}M`:vol>=1e3?`$${(vol/1e3).toFixed(0)}K`:`$${vol.toFixed(0)}`;
+      return prob!=null?`- "${m.question}" → ${prob}% probability (${v} traded)`:null;
     } catch { return null; }
-  }).filter(m => m && m.prob !== null).sort((a,b) => b.vol - a.vol);
+  }).filter(Boolean).join("\n");
 
-  if (!withProbs.length) return null;
-
-  const totalVol = withProbs.reduce((s,m) => s+m.vol, 0);
-  const volStr = totalVol>=1e6?`${(totalVol/1e6).toFixed(1)}M`:totalVol>=1e3?`${(totalVol/1e3).toFixed(0)}K`:`${totalVol.toFixed(0)}`;
-
-  const certain = withProbs.filter(m => m.prob >= 80);   // near-certain outcomes
-  const likely = withProbs.filter(m => m.prob >= 60 && m.prob < 80);
-  const tossup = withProbs.filter(m => m.prob >= 40 && m.prob <= 60);
-  const unlikely = withProbs.filter(m => m.prob < 30);
-  const top = withProbs[0];
-
-  const implications = {
-    signal: (m) => {
-      if (m.prob >= 80) return `Real-money traders are pricing this as near-certain (${m.prob}%) — plan accordingly.`;
-      if (m.prob >= 60) return `A ${m.prob}% probability signals meaningful likelihood — worth stress-testing your assumptions.`;
-      if (m.prob >= 40) return `At ${m.prob}%, markets see this as genuinely uncertain — optionality has value here.`;
-      return `Only ${m.prob}% probability — markets are not pricing this in, but tail-risk planning is warranted.`;
-    }
-  };
-
-  let lines = [];
-
-  // Lead with the highest-conviction signal
-  if (certain.length) {
-    lines.push(`<strong>Near-certain outcome:</strong> "${certain[0].q}" is priced at <strong>${certain[0].prob}%</strong> by traders who have put ${volStr} behind their conviction. ${implications.signal(certain[0])}`);
-  } else if (likely.length) {
-    lines.push(`<strong>Leading signal:</strong> "${likely[0].q}" sits at <strong>${likely[0].prob}%</strong> across ${markets.length} active market${markets.length>1?"s":""}. ${implications.signal(likely[0])}`);
-  } else if (top) {
-    lines.push(`<strong>Top signal:</strong> "${top.q}" is priced at <strong>${top.prob}%</strong> on ${volStr} in trading volume. ${implications.signal(top)}`);
-  }
-
-  // Add toss-up or contrarian signal
-  if (tossup.length && tossup[0] !== withProbs[0]) {
-    lines.push(`<strong>Key uncertainty:</strong> "${tossup[0].q}" at <strong>${tossup[0].prob}%</strong> — markets are split. This is where scenario planning matters most.`);
-  } else if (unlikely.length) {
-    lines.push(`<strong>Market discounting:</strong> "${unlikely[0].q}" at just <strong>${unlikely[0].prob}%</strong> — traders see this as a low-probability event, but not impossible.`);
-  } else if (withProbs.length > 1 && withProbs[1] !== certain[0]) {
-    lines.push(`<strong>Also watch:</strong> "${withProbs[1].q}" at <strong>${withProbs[1].prob}%</strong>.`);
-  }
-
-  return lines.join(" ");
+  const res = await fetch(PROXY, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 150,
+      system: "You are a sharp analyst briefing a C-level executive each morning. Write exactly 2-3 sentences in plain, direct language. No bullet points, no bold text, no headers. Interpret what the market probabilities mean strategically — what should the executive be thinking about or doing? Make it sound like a trusted advisor speaking, not a report.",
+      messages: [{ role: "user", content: `Here are today's Polymarket prediction markets on "${topic}":\n\n${lines}\n\nWrite a brief executive summary.` }]
+    })
+  });
+  if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`);
+  const d = await res.json();
+  return d.content?.[0]?.text || null;
 }
 
 function probColor(p) { return p>=70?"#0F6E56":p>=40?"#B45A10":"#993C1D"; }
@@ -176,7 +149,8 @@ function renderCard(topic, events, summary, color) {
       <span class="card-title">${topic}</span>
       <span class="count">${markets.length} open market${markets.length!==1?"s":""}</span>
     </div>
-    ${summary?`<div class="summary">${summary}</div>`:""}      ${!markets.length?`<p class="italic">No active markets found.</p>`:`
+    ${summary?`<div class="summary">${summary}</div>`:""}
+    ${!markets.length?`<p class="italic">No active markets found.</p>`:`
     <div class="divider">
       ${markets.slice(0,4).map(renderMarket).join("")}
       ${markets.length>4?`<div id="${id}" style="display:none">${markets.slice(4).map(renderMarket).join("")}</div>
@@ -219,7 +193,7 @@ async function generate() {
       results.map(r=>renderCard(r.topic,r.events,r.summary,r.color)).join("");
   }
 
-  const total = results.reduce((s,r)=>s+r.events.flatMap(e=>e.markets||[]).filter(m=>m.active&&!m.closed).length,0);
+  const total = results.reduce((s,r)=>s+r.events.flatMap(e=>e.markets||[]).filter(m=>!m.closed).length,0);
   setStatus(`${topics.length} topics · ${total} open prediction markets`);
   document.getElementById("brief-badges").innerHTML = results.map(r=>
     `<span class="badge" style="background:${r.color}18;border:1px solid ${r.color}55;color:${r.color}">${r.topic}</span>`
@@ -230,4 +204,4 @@ async function generate() {
 renderTopics();
 </script>
 </body>
-</html>
+</html> 
