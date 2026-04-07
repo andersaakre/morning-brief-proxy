@@ -34,7 +34,6 @@
     .meta { font-size: .7rem; color: #aaa; margin-top: 3px; }
     .divider { border-top: 1px solid #eee; padding-top: .75rem; }
     .show-more { font-size: .75rem; color: #888; background: none; border: none; cursor: pointer; padding: 4px 0; margin-top: 4px; }
-    .error-box { background: #fff0f0; border: 1px solid #fcc; border-radius: 8px; padding: 10px 14px; font-size: .8rem; color: #c00; margin-bottom: .75rem; }
     .italic { font-style: italic; color: #888; font-size: .85rem; }
     #status { font-size: .85rem; color: #666; margin-bottom: 1rem; min-height: 1.2rem; }
     .setup { max-width: 560px; }
@@ -90,39 +89,52 @@ function showSetup() {
 function setStatus(msg) { document.getElementById("status").textContent = msg; }
 
 async function searchPolymarket(query) {
-  const url = `${PROXY}?q=${encodeURIComponent(query)}&limit_per_type=8`;
+  const url = `${PROXY}?q=${encodeURIComponent(query)}&limit_per_type=10`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Polymarket HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
-  return data.events || [];
+  // Only return events that are active and not closed
+  return (data.events || []).filter(e => e.active && !e.closed);
 }
 
-async function summarise(topic, events) {
-  const markets = events.flatMap(e => e.markets || []);
+function summarise(topic, events) {
+  const markets = events.flatMap(e => e.markets || []).filter(m => m.active && !m.closed);
   if (!markets.length) return null;
-  const lines = markets.slice(0,10).map(m => {
+
+  const withProbs = markets.map(m => {
     try {
       const prices = JSON.parse(m.outcomePrices||"[]");
       const prob = prices[0] ? Math.round(parseFloat(prices[0])*100) : null;
-      const vol = Number(m.volume||0);
-      const v = vol>=1e6?`$${(vol/1e6).toFixed(1)}M`:vol>=1e3?`$${(vol/1e3).toFixed(0)}K`:`$${vol.toFixed(0)}`;
-      return prob!=null?`• "${m.question}" → ${prob}% Yes (vol ${v})`:`• ${m.question}`;
-    } catch { return `• ${m.question}`; }
-  }).join("\n");
+      return { q: m.question, prob, vol: Number(m.volume||0) };
+    } catch { return null; }
+  }).filter(m => m && m.prob !== null).sort((a,b) => b.vol - a.vol);
 
-  const res = await fetch(PROXY, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 500,
-      system: "You are a concise analyst briefing a C-level executive. Write 3 tight sentences. No bullets, no headers.",
-      messages: [{ role: "user", content: `Summarise these Polymarket prediction markets on "${topic}" for an executive. What do the probabilities signal strategically?\n\n${lines}` }]
-    })
-  });
-  if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`);
-  const d = await res.json();
-  return d.content?.[0]?.text || null;
+  if (!withProbs.length) return null;
+
+  const totalVol = withProbs.reduce((s,m) => s+m.vol, 0);
+  const volStr = totalVol>=1e6?`$${(totalVol/1e6).toFixed(1)}M`:totalVol>=1e3?`$${(totalVol/1e3).toFixed(0)}K`:`$${totalVol.toFixed(0)}`;
+  const top = withProbs[0];
+  const high = withProbs.filter(m => m.prob >= 70);
+  const low = withProbs.filter(m => m.prob <= 30);
+  const tossup = withProbs.filter(m => m.prob >= 40 && m.prob <= 60);
+
+  let s = `${markets.length} active markets with ${volStr} in total trading volume on "${topic}". `;
+
+  if (high.length) {
+    s += `Strong crowd consensus: "${high[0].q}" at ${high[0].prob}% — traders see this as near-certain. `;
+  } else if (top) {
+    s += `Top market by volume: "${top.q}" at ${top.prob}%. `;
+  }
+
+  if (tossup.length) {
+    s += `Key uncertainty to watch: "${tossup[0].q}" at ${tossup[0].prob}% — a genuine toss-up.`;
+  } else if (low.length) {
+    s += `Markets heavily discount: "${low[0].q}" at just ${low[0].prob}%.`;
+  } else if (withProbs.length > 1) {
+    s += `Also watch: "${withProbs[1].q}" at ${withProbs[1].prob}%.`;
+  }
+
+  return s;
 }
 
 function probColor(p) { return p>=70?"#0F6E56":p>=40?"#B45A10":"#993C1D"; }
@@ -140,23 +152,22 @@ function renderMarket(m) {
   </div>`;
 }
 
-function renderCard(topic, events, summary, color, error) {
-  const markets = events.flatMap(e=>e.markets||[]);
+function renderCard(topic, events, summary, color) {
+  const markets = events.flatMap(e=>e.markets||[]).filter(m=>m.active&&!m.closed);
   const id = "m"+Math.random().toString(36).slice(2);
   return `<div class="card">
     <div class="card-header">
       <div class="dot" style="background:${color}"></div>
       <span class="card-title">${topic}</span>
-      <span class="count">${markets.length} market${markets.length!==1?"s":""}</span>
+      <span class="count">${markets.length} open market${markets.length!==1?"s":""}</span>
     </div>
-    ${error?`<div class="error-box">${error}</div>`:""}
     ${summary?`<div class="summary">${summary}</div>`:""}
-    ${!markets.length&&!error?`<p class="italic">No active markets found.</p>`:""}
-    ${markets.length?`<div class="divider">
+    ${!markets.length?`<p class="italic">No active markets found.</p>`:`
+    <div class="divider">
       ${markets.slice(0,4).map(renderMarket).join("")}
       ${markets.length>4?`<div id="${id}" style="display:none">${markets.slice(4).map(renderMarket).join("")}</div>
         <button class="show-more" onclick="toggle('${id}',this,${markets.length-4})">+${markets.length-4} more</button>`:""}
-    </div>`:""}
+    </div>`}
   </div>`;
 }
 
@@ -181,22 +192,16 @@ async function generate() {
   for (let i=0; i<topics.length; i++) {
     const topic = topics[i], color = COLORS[i%8];
     setStatus(`Fetching "${topic}" (${i+1}/${topics.length})…`);
-    let events=[], error=null;
-    try { events = await searchPolymarket(topic); }
-    catch(e) { error = `Could not fetch markets: ${e.message}`; }
-
-    let summary = null;
-    if (events.length) {
-      setStatus(`Summarising "${topic}"…`);
-      try { summary = await summarise(topic, events); }
-      catch(e) { error = (error||"") + " Summary failed: " + e.message; }
-    }
-    results.push({topic,events,summary,color,error});
-    document.getElementById("brief-cards").innerHTML = results.map(r=>renderCard(r.topic,r.events,r.summary,r.color,r.error)).join("");
+    let events=[];
+    try { events = await searchPolymarket(topic); } catch(e) { console.error(e); }
+    const summary = summarise(topic, events);
+    results.push({topic, events, summary, color});
+    document.getElementById("brief-cards").innerHTML =
+      results.map(r=>renderCard(r.topic,r.events,r.summary,r.color)).join("");
   }
 
-  const total = results.reduce((s,r)=>s+r.events.flatMap(e=>e.markets||[]).length,0);
-  setStatus(`${topics.length} topics · ${total} live prediction markets`);
+  const total = results.reduce((s,r)=>s+r.events.flatMap(e=>e.markets||[]).filter(m=>m.active&&!m.closed).length,0);
+  setStatus(`${topics.length} topics · ${total} open prediction markets`);
   document.getElementById("brief-badges").innerHTML = results.map(r=>
     `<span class="badge" style="background:${r.color}18;border:1px solid ${r.color}55;color:${r.color}">${r.topic}</span>`
   ).join("");
