@@ -105,36 +105,51 @@ function summarise(topic, events) {
     try {
       const prices = JSON.parse(m.outcomePrices||"[]");
       const prob = prices[0] ? Math.round(parseFloat(prices[0])*100) : null;
-      return { q: m.question, prob, vol: Number(m.volume||0) };
+      return { q: m.question, prob, vol: Number(m.volume||0), end: m.endDate };
     } catch { return null; }
   }).filter(m => m && m.prob !== null).sort((a,b) => b.vol - a.vol);
 
   if (!withProbs.length) return null;
 
   const totalVol = withProbs.reduce((s,m) => s+m.vol, 0);
-  const volStr = totalVol>=1e6?`$${(totalVol/1e6).toFixed(1)}M`:totalVol>=1e3?`$${(totalVol/1e3).toFixed(0)}K`:`$${totalVol.toFixed(0)}`;
-  const top = withProbs[0];
-  const high = withProbs.filter(m => m.prob >= 70);
-  const low = withProbs.filter(m => m.prob <= 30);
+  const volStr = totalVol>=1e6?`${(totalVol/1e6).toFixed(1)}M`:totalVol>=1e3?`${(totalVol/1e3).toFixed(0)}K`:`${totalVol.toFixed(0)}`;
+
+  const certain = withProbs.filter(m => m.prob >= 80);   // near-certain outcomes
+  const likely = withProbs.filter(m => m.prob >= 60 && m.prob < 80);
   const tossup = withProbs.filter(m => m.prob >= 40 && m.prob <= 60);
+  const unlikely = withProbs.filter(m => m.prob < 30);
+  const top = withProbs[0];
 
-  let s = `${markets.length} active markets with ${volStr} in total trading volume on "${topic}". `;
+  const implications = {
+    signal: (m) => {
+      if (m.prob >= 80) return `Real-money traders are pricing this as near-certain (${m.prob}%) — plan accordingly.`;
+      if (m.prob >= 60) return `A ${m.prob}% probability signals meaningful likelihood — worth stress-testing your assumptions.`;
+      if (m.prob >= 40) return `At ${m.prob}%, markets see this as genuinely uncertain — optionality has value here.`;
+      return `Only ${m.prob}% probability — markets are not pricing this in, but tail-risk planning is warranted.`;
+    }
+  };
 
-  if (high.length) {
-    s += `Strong crowd consensus: "${high[0].q}" at ${high[0].prob}% — traders see this as near-certain. `;
+  let lines = [];
+
+  // Lead with the highest-conviction signal
+  if (certain.length) {
+    lines.push(`<strong>Near-certain outcome:</strong> "${certain[0].q}" is priced at <strong>${certain[0].prob}%</strong> by traders who have put ${volStr} behind their conviction. ${implications.signal(certain[0])}`);
+  } else if (likely.length) {
+    lines.push(`<strong>Leading signal:</strong> "${likely[0].q}" sits at <strong>${likely[0].prob}%</strong> across ${markets.length} active market${markets.length>1?"s":""}. ${implications.signal(likely[0])}`);
   } else if (top) {
-    s += `Top market by volume: "${top.q}" at ${top.prob}%. `;
+    lines.push(`<strong>Top signal:</strong> "${top.q}" is priced at <strong>${top.prob}%</strong> on ${volStr} in trading volume. ${implications.signal(top)}`);
   }
 
-  if (tossup.length) {
-    s += `Key uncertainty to watch: "${tossup[0].q}" at ${tossup[0].prob}% — a genuine toss-up.`;
-  } else if (low.length) {
-    s += `Markets heavily discount: "${low[0].q}" at just ${low[0].prob}%.`;
-  } else if (withProbs.length > 1) {
-    s += `Also watch: "${withProbs[1].q}" at ${withProbs[1].prob}%.`;
+  // Add toss-up or contrarian signal
+  if (tossup.length && tossup[0] !== withProbs[0]) {
+    lines.push(`<strong>Key uncertainty:</strong> "${tossup[0].q}" at <strong>${tossup[0].prob}%</strong> — markets are split. This is where scenario planning matters most.`);
+  } else if (unlikely.length) {
+    lines.push(`<strong>Market discounting:</strong> "${unlikely[0].q}" at just <strong>${unlikely[0].prob}%</strong> — traders see this as a low-probability event, but not impossible.`);
+  } else if (withProbs.length > 1 && withProbs[1] !== certain[0]) {
+    lines.push(`<strong>Also watch:</strong> "${withProbs[1].q}" at <strong>${withProbs[1].prob}%</strong>.`);
   }
 
-  return s;
+  return lines.join(" ");
 }
 
 function probColor(p) { return p>=70?"#0F6E56":p>=40?"#B45A10":"#993C1D"; }
@@ -161,8 +176,7 @@ function renderCard(topic, events, summary, color) {
       <span class="card-title">${topic}</span>
       <span class="count">${markets.length} open market${markets.length!==1?"s":""}</span>
     </div>
-    ${summary?`<div class="summary">${summary}</div>`:""}
-    ${!markets.length?`<p class="italic">No active markets found.</p>`:`
+    ${summary?`<div class="summary">${summary}</div>`:""}      ${!markets.length?`<p class="italic">No active markets found.</p>`:`
     <div class="divider">
       ${markets.slice(0,4).map(renderMarket).join("")}
       ${markets.length>4?`<div id="${id}" style="display:none">${markets.slice(4).map(renderMarket).join("")}</div>
