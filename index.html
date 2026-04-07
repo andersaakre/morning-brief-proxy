@@ -26,6 +26,7 @@
     .card-title { font-size: 1rem; font-weight: 500; flex: 1; }
     .count { font-size: .75rem; color: #888; background: #f5f5f3; border-radius: 20px; padding: 2px 10px; }
     .summary { font-size: .875rem; line-height: 1.7; background: #f5f5f3; border-radius: 8px; padding: 10px 14px; margin-bottom: .75rem; }
+    .section-label { font-size: .65rem; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; color: #aaa; margin: .75rem 0 .4rem; }
     .market { border-left: 2px solid #e0e0e0; padding-left: .75rem; margin-bottom: .6rem; }
     .market p { font-size: .8rem; font-weight: 500; margin-bottom: .3rem; }
     .bar-row { display: flex; align-items: center; gap: .5rem; }
@@ -33,6 +34,10 @@
     .bar-fill { height: 100%; border-radius: 4px; }
     .prob { font-size: .75rem; font-weight: 500; min-width: 30px; text-align: right; }
     .meta { font-size: .7rem; color: #aaa; margin-top: 3px; }
+    .news-item { border-left: 2px solid #e0e0e0; padding-left: .75rem; margin-bottom: .5rem; }
+    .news-item a { font-size: .8rem; font-weight: 500; color: #185FA5; text-decoration: none; line-height: 1.4; display: block; }
+    .news-item a:hover { text-decoration: underline; }
+    .news-item .trail { font-size: .75rem; color: #888; margin-top: 2px; line-height: 1.4; }
     .divider { border-top: 1px solid #eee; padding-top: .75rem; }
     .show-more { font-size: .75rem; color: #888; background: none; border: none; cursor: pointer; padding: 4px 0; margin-top: 4px; }
     .italic { font-style: italic; color: #888; font-size: .85rem; }
@@ -45,7 +50,7 @@
 <div id="setup" class="setup">
   <p class="label">Morning Brief</p>
   <h1>Good morning</h1>
-  <p class="subtitle">Real-money prediction market signals, turned into executive intelligence.</p>
+  <p class="subtitle">News and prediction market signals, turned into executive intelligence.</p>
   <p class="label" style="margin-bottom:.5rem">Your topics</p>
   <div class="topics" id="topics"></div>
   <div class="row">
@@ -56,7 +61,7 @@
 </div>
 
 <div id="brief" style="display:none">
-  <p class="label">Morning Brief · Polymarket</p>
+  <p class="label">Morning Brief</p>
   <h1 id="brief-date"></h1>
   <p id="status"></p>
   <div class="topics" id="brief-badges" style="margin-bottom:1rem"></div>
@@ -97,10 +102,18 @@ async function searchPolymarket(query) {
   return (data.events || []).filter(e => !e.closed);
 }
 
-async function summarise(topic, events) {
-  const markets = events.flatMap(e => e.markets || []).filter(m => !m.closed);
-  if (!markets.length) return null;
-  const lines = markets.slice(0,10).map(m => {
+async function searchGuardian(query) {
+  const url = `${PROXY}?source=guardian&q=${encodeURIComponent(query)}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.response?.results || [];
+}
+
+async function summarise(topic, markets, articles) {
+  if (!markets.length && !articles.length) return null;
+
+  const marketLines = markets.slice(0,8).map(m => {
     try {
       const prices = JSON.parse(m.outcomePrices||"[]");
       const prob = prices[0] ? Math.round(parseFloat(prices[0])*100) : null;
@@ -110,14 +123,21 @@ async function summarise(topic, events) {
     } catch { return null; }
   }).filter(Boolean).join("\n");
 
+  const newsLines = articles.slice(0,5).map(a => `- ${a.webTitle}`).join("\n");
+
+  const prompt = [
+    markets.length ? `Polymarket prediction markets on "${topic}":\n${marketLines}` : "",
+    articles.length ? `Latest Guardian headlines on "${topic}":\n${newsLines}` : "",
+  ].filter(Boolean).join("\n\n");
+
   const res = await fetch(PROXY, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 150,
-      system: "You are a sharp analyst briefing a C-level executive each morning. Write exactly 2-3 sentences in plain, direct language. No bullet points, no bold text, no headers. Interpret what the market probabilities mean strategically — what should the executive be thinking about or doing? Make it sound like a trusted advisor speaking, not a report.",
-      messages: [{ role: "user", content: `Here are today's Polymarket prediction markets on "${topic}":\n\n${lines}\n\nWrite a brief executive summary.` }]
+      max_tokens: 180,
+      system: "You are a sharp analyst briefing a C-level executive each morning. Write exactly 2-3 sentences in plain, direct language. No bullet points, no bold text, no headers. Weave together what the news headlines say is happening with what the prediction markets say is likely to happen next. What should the executive be thinking about or doing? Sound like a trusted advisor, not a report.",
+      messages: [{ role: "user", content: `${prompt}\n\nWrite a brief executive summary.` }]
     })
   });
   if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`);
@@ -140,22 +160,34 @@ function renderMarket(m) {
   </div>`;
 }
 
-function renderCard(topic, events, summary, color) {
+function renderArticle(a) {
+  const trail = a.fields?.trailText ? `<p class="trail">${a.fields.trailText.replace(/<[^>]*>/g,"").slice(0,120)}…</p>` : "";
+  return `<div class="news-item">
+    <a href="${a.webUrl}" target="_blank">${a.webTitle}</a>
+    ${trail}
+  </div>`;
+}
+
+function renderCard(topic, events, articles, summary, color) {
   const markets = events.flatMap(e=>e.markets||[]).filter(m=>!m.closed);
   const id = "m"+Math.random().toString(36).slice(2);
   return `<div class="card">
     <div class="card-header">
       <div class="dot" style="background:${color}"></div>
       <span class="card-title">${topic}</span>
-      <span class="count">${markets.length} open market${markets.length!==1?"s":""}</span>
+      <span class="count">${markets.length} market${markets.length!==1?"s":""} · ${articles.length} article${articles.length!==1?"s":""}</span>
     </div>
     ${summary?`<div class="summary">${summary}</div>`:""}
-    ${!markets.length?`<p class="italic">No active markets found.</p>`:`
-    <div class="divider">
-      ${markets.slice(0,4).map(renderMarket).join("")}
-      ${markets.length>4?`<div id="${id}" style="display:none">${markets.slice(4).map(renderMarket).join("")}</div>
-        <button class="show-more" onclick="toggle('${id}',this,${markets.length-4})">+${markets.length-4} more</button>`:""}
-    </div>`}
+    ${markets.length?`
+      <p class="section-label">Prediction markets</p>
+      <div>
+        ${markets.slice(0,4).map(renderMarket).join("")}
+        ${markets.length>4?`<div id="${id}-m" style="display:none">${markets.slice(4).map(renderMarket).join("")}</div>
+          <button class="show-more" onclick="toggle('${id}-m',this,${markets.length-4})">+${markets.length-4} more markets</button>`:""}
+      </div>`:""}
+    ${articles.length?`
+      <p class="section-label" style="margin-top:${markets.length?".75rem":"0"}">Latest news</p>
+      <div>${articles.map(renderArticle).join("")}</div>`:""}
   </div>`;
 }
 
@@ -179,22 +211,28 @@ async function generate() {
   const results = [];
   for (let i=0; i<topics.length; i++) {
     const topic = topics[i], color = COLORS[i%8];
-    setStatus(`Fetching "${topic}" (${i+1}/${topics.length})…`);
-    let events=[];
-    try { events = await searchPolymarket(topic); } catch(e) { console.error(e); }
+    setStatus(`Fetching data for "${topic}" (${i+1}/${topics.length})…`);
+
+    let events=[], articles=[];
+    try { [events, articles] = await Promise.all([searchPolymarket(topic), searchGuardian(topic)]); }
+    catch(e) { console.error(e); }
+
+    const markets = events.flatMap(e=>e.markets||[]).filter(m=>!m.closed);
     let summary = null;
-    if (events.length) {
+    if (markets.length || articles.length) {
       setStatus(`Summarising "${topic}"…`);
-      try { summary = await summarise(topic, events); }
+      try { summary = await summarise(topic, markets, articles); }
       catch(e) { console.error("Summary failed:", e); }
     }
-    results.push({topic, events, summary, color});
+
+    results.push({topic, events, articles, summary, color});
     document.getElementById("brief-cards").innerHTML =
-      results.map(r=>renderCard(r.topic,r.events,r.summary,r.color)).join("");
+      results.map(r=>renderCard(r.topic,r.events,r.articles,r.summary,r.color)).join("");
   }
 
-  const total = results.reduce((s,r)=>s+r.events.flatMap(e=>e.markets||[]).filter(m=>!m.closed).length,0);
-  setStatus(`${topics.length} topics · ${total} open prediction markets`);
+  const totalMarkets = results.reduce((s,r)=>s+r.events.flatMap(e=>e.markets||[]).filter(m=>!m.closed).length,0);
+  const totalArticles = results.reduce((s,r)=>s+r.articles.length,0);
+  setStatus(`${topics.length} topics · ${totalMarkets} markets · ${totalArticles} articles`);
   document.getElementById("brief-badges").innerHTML = results.map(r=>
     `<span class="badge" style="background:${r.color}18;border:1px solid ${r.color}55;color:${r.color}">${r.topic}</span>`
   ).join("");
@@ -204,4 +242,4 @@ async function generate() {
 renderTopics();
 </script>
 </body>
-</html> 
+</html>
