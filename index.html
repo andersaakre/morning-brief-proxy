@@ -66,7 +66,7 @@
 <script>
 const PROXY = "https://morning-brief-proxy.vercel.app/api/polymarket";
 const COLORS = ["#185FA5","#0F6E56","#993C1D","#3B6D11","#534AB7","#993556","#885EA0","#B45A10"];
-let topics = ["War in Iran","Global trade tariffs","AI technology","Financial markets","US politics"];
+let topics = ["Iran war ceasefire","Trump tariffs trade","Artificial intelligence","Fed interest rates","US politics 2026"];
 
 function renderTopics() {
   document.getElementById("topics").innerHTML = topics.map((t,i) =>
@@ -93,12 +93,12 @@ async function searchPolymarket(query) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
-  // Only return events that are active and not closed
-  return (data.events || []).filter(e => e.active && !e.closed);
+  // Only return events that are not closed
+  return (data.events || []).filter(e => !e.closed);
 }
 
 function summarise(topic, events) {
-  const markets = events.flatMap(e => e.markets || []).filter(m => m.active && !m.closed);
+  const markets = events.flatMap(e => e.markets || []).filter(m => !m.closed);
   if (!markets.length) return null;
 
   const withProbs = markets.map(m => {
@@ -153,7 +153,7 @@ function renderMarket(m) {
 }
 
 function renderCard(topic, events, summary, color) {
-  const markets = events.flatMap(e=>e.markets||[]).filter(m=>m.active&&!m.closed);
+  const markets = events.flatMap(e=>e.markets||[]).filter(m=>!m.closed);
   const id = "m"+Math.random().toString(36).slice(2);
   return `<div class="card">
     <div class="card-header">
