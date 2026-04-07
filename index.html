@@ -17,7 +17,7 @@
     input { flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: .9rem; background: #fff; }
     button.primary { background: #1a1a1a; color: #fff; border: none; border-radius: 8px; padding: 10px 20px; font-size: .9rem; cursor: pointer; }
     button.primary:disabled { background: #999; cursor: default; }
-    button.secondary { background: none; border: 1px solid #ddd; border-radius: 8px; padding: 8px 16px; font-size: .85rem; cursor: pointer; background: #fff; }
+    button.secondary { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 8px 16px; font-size: .85rem; cursor: pointer; }
     #generate { width: 100%; margin-top: .5rem; }
     .card { background: #fff; border: 1px solid #e5e5e5; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; }
     .card-header { display: flex; align-items: center; gap: .6rem; margin-bottom: .75rem; }
@@ -97,45 +97,32 @@ async function searchPolymarket(query) {
   return data.events || [];
 }
 
-function generateLocalSummary(topic, events) {
+async function summarise(topic, events) {
   const markets = events.flatMap(e => e.markets || []);
   if (!markets.length) return null;
-
-  // Find open markets with prices
-  const open = markets.filter(m => !m.closed && m.outcomePrices);
-  const withProbs = open.map(m => {
+  const lines = markets.slice(0,10).map(m => {
     try {
       const prices = JSON.parse(m.outcomePrices||"[]");
       const prob = prices[0] ? Math.round(parseFloat(prices[0])*100) : null;
       const vol = Number(m.volume||0);
-      return { question: m.question, prob, vol };
-    } catch { return null; }
-  }).filter(m => m && m.prob !== null).sort((a,b) => b.vol - a.vol);
+      const v = vol>=1e6?`$${(vol/1e6).toFixed(1)}M`:vol>=1e3?`$${(vol/1e3).toFixed(0)}K`:`$${vol.toFixed(0)}`;
+      return prob!=null?`• "${m.question}" → ${prob}% Yes (vol ${v})`:`• ${m.question}`;
+    } catch { return `• ${m.question}`; }
+  }).join("\n");
 
-  if (!withProbs.length) return null;
-
-  const top = withProbs[0];
-  const high = withProbs.filter(m => m.prob >= 70);
-  const contested = withProbs.filter(m => m.prob >= 40 && m.prob < 60);
-  const totalVol = markets.reduce((s,m) => s + Number(m.volume||0), 0);
-  const volStr = totalVol>=1e6?`${(totalVol/1e6).toFixed(1)}M`:totalVol>=1e3?`${(totalVol/1e3).toFixed(0)}K`:`${totalVol.toFixed(0)}`;
-
-  let summary = `Polymarket traders have placed ${volStr} across ${markets.length} markets on ${topic}. `;
-
-  if (high.length > 0) {
-    summary += `Strong consensus: "${high[0].question}" at ${high[0].prob}% probability. `;
-  } else if (top) {
-    summary += `The leading market "${top.question}" sits at ${top.prob}%. `;
-  }
-
-  if (contested.length > 0) {
-    summary += `Highly uncertain: "${contested[0].question}" at ${contested[0].prob}% — nearly a coin flip.`;
-  } else if (withProbs.length > 1) {
-    const second = withProbs[1];
-    summary += `Watch also: "${second.question}" at ${second.prob}%.`;
-  }
-
-  return summary;
+  const res = await fetch(PROXY, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 500,
+      system: "You are a concise analyst briefing a C-level executive. Write 3 tight sentences. No bullets, no headers.",
+      messages: [{ role: "user", content: `Summarise these Polymarket prediction markets on "${topic}" for an executive. What do the probabilities signal strategically?\n\n${lines}` }]
+    })
+  });
+  if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`);
+  const d = await res.json();
+  return d.content?.[0]?.text || null;
 }
 
 function probColor(p) { return p>=70?"#0F6E56":p>=40?"#B45A10":"#993C1D"; }
@@ -205,7 +192,6 @@ async function generate() {
       catch(e) { error = (error||"") + " Summary failed: " + e.message; }
     }
     results.push({topic,events,summary,color,error});
-    // render cards as we go
     document.getElementById("brief-cards").innerHTML = results.map(r=>renderCard(r.topic,r.events,r.summary,r.color,r.error)).join("");
   }
 
