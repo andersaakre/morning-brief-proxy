@@ -97,32 +97,45 @@ async function searchPolymarket(query) {
   return data.events || [];
 }
 
-async function summarise(topic, events) {
+function generateLocalSummary(topic, events) {
   const markets = events.flatMap(e => e.markets || []);
   if (!markets.length) return null;
-  const lines = markets.slice(0,10).map(m => {
+
+  // Find open markets with prices
+  const open = markets.filter(m => !m.closed && m.outcomePrices);
+  const withProbs = open.map(m => {
     try {
       const prices = JSON.parse(m.outcomePrices||"[]");
       const prob = prices[0] ? Math.round(parseFloat(prices[0])*100) : null;
       const vol = Number(m.volume||0);
-      const v = vol>=1e6?`$${(vol/1e6).toFixed(1)}M`:vol>=1e3?`$${(vol/1e3).toFixed(0)}K`:`$${vol.toFixed(0)}`;
-      return prob!=null?`• "${m.question}" → ${prob}% Yes (vol ${v})`:`• ${m.question}`;
-    } catch { return `• ${m.question}`; }
-  }).join("\n");
+      return { question: m.question, prob, vol };
+    } catch { return null; }
+  }).filter(m => m && m.prob !== null).sort((a,b) => b.vol - a.vol);
 
-  const res = await fetch(PROXY, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 500,
-      system: "You are a concise analyst briefing a C-level executive. Write 3 tight sentences. No bullets, no headers.",
-      messages: [{ role: "user", content: `Summarise these Polymarket prediction markets on "${topic}" for an executive. What do the probabilities signal strategically?\n\n${lines}` }]
-    })
-  });
-  if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`);
-  const d = await res.json();
-  return d.content?.[0]?.text || null;
+  if (!withProbs.length) return null;
+
+  const top = withProbs[0];
+  const high = withProbs.filter(m => m.prob >= 70);
+  const contested = withProbs.filter(m => m.prob >= 40 && m.prob < 60);
+  const totalVol = markets.reduce((s,m) => s + Number(m.volume||0), 0);
+  const volStr = totalVol>=1e6?`${(totalVol/1e6).toFixed(1)}M`:totalVol>=1e3?`${(totalVol/1e3).toFixed(0)}K`:`${totalVol.toFixed(0)}`;
+
+  let summary = `Polymarket traders have placed ${volStr} across ${markets.length} markets on ${topic}. `;
+
+  if (high.length > 0) {
+    summary += `Strong consensus: "${high[0].question}" at ${high[0].prob}% probability. `;
+  } else if (top) {
+    summary += `The leading market "${top.question}" sits at ${top.prob}%. `;
+  }
+
+  if (contested.length > 0) {
+    summary += `Highly uncertain: "${contested[0].question}" at ${contested[0].prob}% — nearly a coin flip.`;
+  } else if (withProbs.length > 1) {
+    const second = withProbs[1];
+    summary += `Watch also: "${second.question}" at ${second.prob}%.`;
+  }
+
+  return summary;
 }
 
 function probColor(p) { return p>=70?"#0F6E56":p>=40?"#B45A10":"#993C1D"; }
@@ -189,7 +202,7 @@ async function generate() {
     if (events.length) {
       setStatus(`Summarising "${topic}"…`);
       try { summary = await summarise(topic, events); }
-      catch(e) { error = (error||"")+" Summary failed: "+e.message; }
+      catch(e) { error = (error||"") + " Summary failed: " + e.message; }
     }
     results.push({topic,events,summary,color,error});
     // render cards as we go
