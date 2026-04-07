@@ -208,7 +208,12 @@ async function generate() {
     setStatus(`Fetching "${topic}" (${i+1}/${topics.length})…`);
     let events=[];
     try { events = await searchPolymarket(topic); } catch(e) { console.error(e); }
-    const summary = summarise(topic, events);
+    let summary = null;
+    if (events.length) {
+      setStatus(`Summarising "${topic}"…`);
+      try { summary = await summarise(topic, events); }
+      catch(e) { console.error("Summary failed:", e); }
+    }
     results.push({topic, events, summary, color});
     document.getElementById("brief-cards").innerHTML =
       results.map(r=>renderCard(r.topic,r.events,r.summary,r.color)).join("");
